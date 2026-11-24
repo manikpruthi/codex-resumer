@@ -9,7 +9,7 @@ A tiny macOS menu-bar app that continues your Codex chats automatically once a u
 - **Auto-resume after reset**: finds Codex chats whose last turn stopped with *"You've hit your usage limit"*, waits until the limit actually resets, then opens each chat and sends your message (default `continue`).
 - **Handles both windows**: if the 5-hour and weekly limits are both exhausted, it waits for the later of the two resets.
 - **Live usage in the menu**: 5-hour and weekly usage with their reset times, read from Codex's own `account/rateLimits/read` API.
-- **Paused chats list**: click one to open it in Codex. **Resume Now** sends the message straight away, which is useful after spending a reset credit.
+- **Pick which chats resume**: every paused chat is ticked by default. Click one to untick it and it is skipped; your choice is remembered. Hold **⌥ Option** to swap each row for *Open in Codex*. **Resume Selected Now** sends the message straight away, which is useful after spending a reset credit.
 - **Editable message**, **Launch at Login**, and an on/off toggle.
 - **Lightweight**: one AppKit binary with no SwiftUI and no web views, about 12 MB footprint (CodexReset measured 37 MB on the same machine). The 60 s check is a single read-only SQLite query of about 4 ms. `codex` itself runs only briefly, when a chat is paused or when you open the menu.
 - **Safe by design**: it never redeems rate-limit reset credits, never edits Codex's config, and opens Codex's databases read-only.
@@ -54,13 +54,13 @@ The app is ad-hoc signed, so macOS ties the Accessibility grant to that exact bu
 | Menu item | What it does |
 |---|---|
 | 5-hour / Weekly | Current usage and when each window resets |
-| Paused chats | Chats stopped by a limit. Click to open in Codex |
-| Resume Now | Send the message to every paused chat immediately |
+| Paused chats (✓) | Chats stopped by a limit. Click to tick or untick for auto-resume. Hold ⌥ and click to open the chat in Codex |
+| Resume Selected Now | Send the message to every ticked chat immediately |
 | Auto-Resume After Reset | Turn automatic resuming on or off |
 | Message… | Change the text that gets sent (default `continue`) |
 | Launch at Login | Start with macOS |
 
-The menu-bar icon is `↻` when nothing is paused and `⏸` while chats are waiting. Hover over it to see the resume time.
+The menu-bar icon is `↻` when nothing is waiting and `⏸` while ticked chats are waiting. Hover over it to see the resume time.
 
 Diagnostics:
 
@@ -68,7 +68,7 @@ Diagnostics:
 "/Applications/Codex Resumer.app/Contents/MacOS/CodexResumer" --dump
 ```
 
-This prints usage, the computed resume time, the paused chats and the Accessibility state.
+This prints usage, the computed resume time, the paused chats (✓ = will auto-resume) and the Accessibility state.
 
 ## How it works
 

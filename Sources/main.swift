@@ -18,6 +18,11 @@ enum Settings {
         get { d.object(forKey: "enabled") as? Bool ?? true }
         set { d.set(newValue, forKey: "enabled") }
     }
+    /// Thread ids the user unticked: listed in the menu but never resumed.
+    static var excluded: Set<String> {
+        get { Set(d.stringArray(forKey: "excluded") ?? []) }
+        set { d.set(Array(newValue), forKey: "excluded") }
+    }
     static var message: String {
         get { d.string(forKey: "message") ?? "continue" }
         set { d.set(newValue, forKey: "message") }
@@ -296,6 +301,12 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var lastAttempt: [String: Date] = [:]  // thread id → last time we typed into it
     private var status = ""
 
+    /// Paused chats the user wants resumed (ticked in the menu).
+    private var selected: [PausedChat] {
+        let skip = Settings.excluded
+        return paused.filter { !skip.contains($0.threadID) }
+    }
+
     func applicationDidFinishLaunching(_ n: Notification) {
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         menu.delegate = self
@@ -318,7 +329,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func tick() {
         paused = ChatDB.pausedChats().filter { (attempts[$0.turnID] ?? 0) < 3 }
         updateIcon()
-        guard Settings.enabled, !paused.isEmpty, !resuming, Date() >= nextCheck else { return }
+        guard Settings.enabled, !selected.isEmpty, !resuming, Date() >= nextCheck else { return }
         refreshLimits { [weak self] l in
             guard let self else { return }
             guard let l else {
@@ -358,7 +369,7 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         // Never nudge the same chat twice within 15 min (guards against a limit codex doesn't report).
         let now = Date()
-        let due = paused.filter { force || now.timeIntervalSince(lastAttempt[$0.threadID] ?? .distantPast) > 900 }
+        let due = selected.filter { force || now.timeIntervalSince(lastAttempt[$0.threadID] ?? .distantPast) > 900 }
         guard !due.isEmpty else { return }
         resume(queue: due, previous: NSWorkspace.shared.frontmostApplication)
     }
@@ -389,17 +400,20 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: UI
 
     private func updateIcon() {
-        let name = paused.isEmpty ? "arrow.clockwise.circle" : "pause.circle"
+        let name = selected.isEmpty ? "arrow.clockwise.circle" : "pause.circle"
         let img = NSImage(systemSymbolName: name, accessibilityDescription: "Codex Resumer")
         img?.isTemplate = true
         item.button?.image = img
         item.button?.appearsDisabled = !Settings.enabled
+        let n = selected.count
         if paused.isEmpty {
             item.button?.toolTip = "Codex Resumer — no paused chats"
+        } else if n == 0 {
+            item.button?.toolTip = "\(paused.count) paused · none selected to resume"
         } else if nextCheck > Date() {
-            item.button?.toolTip = "\(paused.count) paused · resumes \(Self.fmt(nextCheck))"
+            item.button?.toolTip = "\(n) to resume \(Self.fmt(nextCheck))"
         } else {
-            item.button?.toolTip = "\(paused.count) paused"
+            item.button?.toolTip = "\(n) to resume"
         }
     }
 
@@ -434,14 +448,22 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if paused.isEmpty {
             info("No chats paused by a limit")
         } else {
-            let when = nextCheck > Date() ? " · resume \(Self.fmt(nextCheck))" : ""
-            info("Paused chats (\(paused.count))\(when)")
+            let when = nextCheck > Date() && !selected.isEmpty ? " · resume \(Self.fmt(nextCheck))" : ""
+            info("Paused chats — tick to auto-resume\(when)")
+            let skip = Settings.excluded
             for c in paused {
-                let i = action("   " + Self.clip(c.title), #selector(openChat(_:)))
+                let i = action(Self.clip(c.title), #selector(toggleChat(_:)))
                 i.representedObject = c.threadID
-                i.toolTip = "Open in Codex"
+                i.state = skip.contains(c.threadID) ? .off : .on
+                i.toolTip = "Click to include or skip · hold ⌥ to open in Codex"
+                // Holding Option swaps the row for "Open in Codex".
+                let open = action("Open “\(Self.clip(c.title, 34))” in Codex", #selector(openChat(_:)))
+                open.representedObject = c.threadID
+                open.keyEquivalentModifierMask = .option
+                open.isAlternate = true
             }
-            _ = action("Resume Now", #selector(resumeNow))
+            let now = action("Resume Selected Now", #selector(resumeNow))
+            now.isEnabled = !selected.isEmpty
         }
         if !status.isEmpty { info(status) }
 
@@ -462,6 +484,16 @@ final class App: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let id = sender.representedObject as? String,
               let url = URL(string: "codex://threads/\(id)") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    @objc private func toggleChat(_ sender: NSMenuItem) {
+        guard let id = sender.representedObject as? String else { return }
+        var skip = Settings.excluded
+        if skip.contains(id) { skip.remove(id) } else { skip.insert(id) }
+        Settings.excluded = skip
+        nextCheck = .distantPast
+        updateIcon()
+        tick()
     }
 
     @objc private func resumeNow() { if !resuming { resumeAll(force: true) } }
@@ -546,17 +578,20 @@ extension App {
             lines.append("Usage unknown (codex not found or no response)")
         }
         let paused = ChatDB.pausedChats()
-        lines.append(paused.isEmpty ? "No chats paused by a limit" : "Paused chats (\(paused.count))")
-        lines += paused.map { "   \(clip($0.title))  [\($0.threadID)]" }
+        lines.append(paused.isEmpty ? "No chats paused by a limit" : "Paused chats — tick to auto-resume")
+        let skip = Settings.excluded
+        lines += paused.map { "\(skip.contains($0.threadID) ? "    " : "✓ ")\(clip($0.title))  [\($0.threadID)]" }
         lines.append("Accessibility trusted: \(Typist.trusted)")
         return lines
     }
 
     static func snapshot(to path: String) {
         let raw = menuLines().filter { !$0.hasPrefix("limited:") && !$0.hasPrefix("Accessibility") }
-        let rows: [(String, Bool)] = raw.map { ($0.replacingOccurrences(
-            of: #"\s+\[[0-9a-f-]+\]"#, with: "", options: .regularExpression), false) }
-            + [("—", false), ("Resume Now", true), ("—", false),
+        let rows: [(String, Bool)] = raw.map { line in
+            let isChat = line.range(of: #"\[[0-9a-f-]+\]$"#, options: .regularExpression) != nil
+            return (line.replacingOccurrences(of: #"\s+\[[0-9a-f-]+\]"#, with: "",
+                                              options: .regularExpression), isChat)
+        } + [("—", false), ("Resume Selected Now", true), ("—", false),
                ("✓ Auto-Resume After Reset", true), ("Message: “\(Settings.message)”…", true),
                ("Launch at Login", true), ("—", false), ("Quit", true)]
         let w: CGFloat = 340, rowH: CGFloat = 22, pad: CGFloat = 8
